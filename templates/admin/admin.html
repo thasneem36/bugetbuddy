@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Admin - User Management</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <style>
+        body { display: flex; }
+        .sidebar {
+            width: 200px;
+            background: #2d3e50;
+            color: #fff;
+            min-height: 100vh;
+            padding-top: 40px;
+        }
+        .sidebar h3 {
+            margin: 0 0 20px 0;
+            text-align: center;
+            font-size: 22px;
+        }
+        .sidebar ul {
+            list-style: none;
+            padding: 0;
+        }
+        .sidebar ul li {
+            padding: 14px 24px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .sidebar ul li:hover, .sidebar ul li.active {
+            background: #34495e;
+        }
+        .main-content {
+            flex: 1;
+            padding: 30px;
+        }
+        table { margin: 30px auto; border-collapse: collapse; width: 80%; }
+        th, td { padding: 10px 16px; border: 1px solid #ccc; }
+        th { background: #f0f0f0; }
+        .admin-label { color: #27ae60; font-weight: bold; }
+        .actions a { margin: 0 5px; }
+        .user-list-section { display: none; }
+        .user-list-section.active { display: block; }
+    </style>
+    <script>
+        function showSection(section) {
+            document.querySelectorAll('.user-list-section').forEach(function(el) {
+                el.classList.remove('active');
+            });
+            document.getElementById(section).classList.add('active');
+            document.querySelectorAll('.sidebar ul li').forEach(function(el) {
+                el.classList.remove('active');
+            });
+            document.getElementById('users-link').classList.add('active');
+        }
+        window.onload = function() {
+            document.getElementById('users-link').onclick = function() {
+                showSection('user-list');
+            };
+        };
+    </script>
+</head>
+<body>
+    <div class="sidebar">
+        <h3>Admin Panel</h3>
+        <ul>
+            <li id="users-link" class="active">Users</li>
+        </ul>
+    </div>
+    <div class="main-content">
+        <p>Welcome, {{ name }} | <a href="/dashboard">Dashboard</a> | <a href="/logout">Logout</a></p>
+        <div id="user-list" class="user-list-section active">
+            <h2>User Management</h2>
+            <table>
+                <tr>
+                    <th>ID</th>
+                    <th>Name</th>
+                    <th>Email</th>
+                    <th>Role</th>
+                    <th>Actions</th>
+                </tr>
+                {% for user in users %}
+                <tr>
+                    <td>{{ user.id }}</td>
+                    <td>{{ user.name }}</td>
+                    <td>{{ user.email }}</td>
+                    <td>
+                        {% if user.is_admin %}
+                            <span class="admin-label">Admin</span>
+                        {% else %}
+                            User
+                        {% endif %}
+                    </td>
+                    <td class="actions">
+                        {% if not user.is_admin %}
+                            <a href="/admin/promote/{{ user.id }}">Promote to Admin</a>
+                            <a href="/admin/delete/{{ user.id }}" onclick="return confirm('Delete this user?');">Delete</a>
+                        {% else %}
+                            <a href="/admin/demote/{{ user.id }}">Demote to User</a>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </table>
+        </div>
+    </div>
+</body>
+</html> 
