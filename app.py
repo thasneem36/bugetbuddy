@@ -1,108 +1,183 @@
-from flask import Flask, render_template, request, redirect, session
+from flask import Flask, render_template, request, redirect, url_for, session, flash
 from flask_mysqldb import MySQL
-import MySQLdb.cursors
-import re
+from werkzeug.security import generate_password_hash, check_password_hash
+from config import Config
 
 app = Flask(__name__)
-app.secret_key = 'yoursecretkey'
+app.config.from_object(Config)
 
-# DB Config
-app.config.from_pyfile('config.py')
 mysql = MySQL(app)
 
+# Helper function to check if logged in
+def is_logged_in():
+    return 'user_id' in session
+
+# Route: Home (redirect to dashboard or login)
 @app.route('/')
 def home():
-    return render_template('index.html')
+    if is_logged_in():
+        return redirect(url_for('dashboard'))
+    return redirect(url_for('login'))
 
-@app.route('/login', methods=['GET', 'POST'])
-def login():
-    msg = ''
-    if request.method == 'POST':
-        email = request.form['email']
-        password = request.form['password']
-        cursor = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
-        cursor.execute('SELECT * FROM users WHERE email = %s AND password = %s', (email, password,))
-        user = cursor.fetchone()
-        if user:
-            session['loggedin'] = True
-            session['id'] = user['id']
-            session['name'] = user['name']
-            session['is_admin'] = user.get('is_admin', 0)
-            return redirect('/dashboard')
-        else:
-            msg = 'Invalid credentials!'
-    return render_template('login.html', msg=msg)
-
-@app.route('/dashboard')
-def dashboard():
-    if 'loggedin' in session:
-        return render_template('dashboard.html', name=session['name'])
-    return redirect('/login')
-
-@app.route('/logout')
-def logout():
-    session.clear()
-    return redirect('/login')
-
+# Route: Register
 @app.route('/register', methods=['GET', 'POST'])
 def register():
-    msg = ''
     if request.method == 'POST':
         name = request.form['name']
         email = request.form['email']
         password = request.form['password']
-        confirm_password = request.form['confirm_password']
-        cursor = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
-        cursor.execute('SELECT * FROM users WHERE email = %s', (email,))
-        account = cursor.fetchone()
-        if account:
-            msg = 'Account already exists!'
-        elif not re.match(r'[^@]+@[^@]+\.[^@]+', email):
-            msg = 'Invalid email address!'
-        elif password != confirm_password:
-            msg = 'Passwords do not match!'
-        elif not name or not email or not password:
-            msg = 'Please fill out the form!'
+        role = 'user'  # default role
+
+        cur = mysql.connection.cursor()
+        cur.execute("SELECT * FROM users WHERE email=%s", (email,))
+        user = cur.fetchone()
+        if user:
+            flash('Email already registered', 'danger')
+            return redirect(url_for('register'))
+
+        hashed_pw = generate_password_hash(password)
+        cur.execute("INSERT INTO users (name, email, password, role) VALUES (%s,%s,%s,%s)",
+                    (name, email, hashed_pw, role))
+        mysql.connection.commit()
+        cur.close()
+
+        flash('You are registered! Please login.', 'success')
+        return redirect(url_for('login'))
+    return render_template('register.html')
+
+# Route: Login
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        email = request.form['email']
+        password = request.form['password']
+
+        cur = mysql.connection.cursor()
+        cur.execute("SELECT * FROM users WHERE email=%s", (email,))
+        user = cur.fetchone()
+        cur.close()
+
+        if user and check_password_hash(user[3], password):
+            session['user_id'] = user[0]
+            session['user_name'] = user[1]
+            session['role'] = user[4]
+            flash('Login successful', 'success')
+            return redirect(url_for('dashboard'))
         else:
-            cursor.execute('INSERT INTO users (name, email, password) VALUES (%s, %s, %s)', (name, email, password))
-            mysql.connection.commit()
-            msg = 'You have successfully registered!'
-            return redirect('/login')
-    return render_template('register.html', msg=msg)
+            flash('Invalid Credentials', 'danger')
+            return redirect(url_for('login'))
+    return render_template('login.html')
 
-@app.route('/admin')
-def admin():
-    print(session)  # Add this line
-    if 'loggedin' in session and session.get('is_admin'):
-        cursor = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
-        cursor.execute('SELECT id, name, email, is_admin FROM users')
-        users = cursor.fetchall()
-        return render_template('admin.html', users=users, name=session['name'])
-    return redirect('/login')
+# Route: Logout
+@app.route('/logout')
+def logout():
+    session.clear()
+    flash('You have logged out', 'success')
+    return redirect(url_for('login'))
 
-@app.route('/admin/delete/<int:user_id>')
-def delete_user(user_id):
-    if 'loggedin' in session and session.get('is_admin'):
-        cursor = mysql.connection.cursor()
-        cursor.execute('DELETE FROM users WHERE id = %s AND is_admin = 0', (user_id,))
+# Route: Dashboard
+@app.route('/dashboard')
+def dashboard():
+    if not is_logged_in():
+        return redirect(url_for('login'))
+
+    user_id = session['user_id']
+    cur = mysql.connection.cursor()
+    # Sum income and expenses
+    cur.execute("SELECT SUM(amount) FROM transactions WHERE user_id=%s AND type='income'", (user_id,))
+    total_income = cur.fetchone()[0] or 0
+    cur.execute("SELECT SUM(amount) FROM transactions WHERE user_id=%s AND type='expense'", (user_id,))
+    total_expense = cur.fetchone()[0] or 0
+    balance = total_income - total_expense
+    cur.close()
+    return render_template('dashboard.html', income=total_income, expense=total_expense, balance=balance)
+
+# Route: Add Transaction
+@app.route('/add', methods=['GET', 'POST'])
+def add_transaction():
+    if not is_logged_in():
+        return redirect(url_for('login'))
+
+    if request.method == 'POST':
+        amount = request.form['amount']
+        category = request.form['category']
+        ttype = request.form['type']
+        description = request.form['description']
+        date = request.form['date']
+
+        user_id = session['user_id']
+        cur = mysql.connection.cursor()
+        cur.execute("""INSERT INTO transactions (user_id, amount, category, type, description, date) 
+                       VALUES (%s, %s, %s, %s, %s, %s)""",
+                    (user_id, amount, category, ttype, description, date))
         mysql.connection.commit()
-    return redirect('/admin')
+        cur.close()
+        flash('Transaction added', 'success')
+        return redirect(url_for('view_transactions'))
 
-@app.route('/admin/promote/<int:user_id>')
-def promote_user(user_id):
-    if 'loggedin' in session and session.get('is_admin'):
-        cursor = mysql.connection.cursor()
-        cursor.execute('UPDATE users SET is_admin = 1 WHERE id = %s', (user_id,))
-        mysql.connection.commit()
-    return redirect('/admin')
+    return render_template('add_transaction.html')
 
-@app.route('/admin/demote/<int:user_id>')
-def demote_user(user_id):
-    if 'loggedin' in session and session.get('is_admin'):
-        cursor = mysql.connection.cursor()
-        cursor.execute('UPDATE users SET is_admin = 0 WHERE id = %s', (user_id,))
+# Route: View Transactions
+@app.route('/transactions')
+def view_transactions():
+    if not is_logged_in():
+        return redirect(url_for('login'))
+
+    user_id = session['user_id']
+    cur = mysql.connection.cursor()
+    cur.execute("SELECT id, amount, category, type, description, date FROM transactions WHERE user_id=%s ORDER BY date DESC", (user_id,))
+    transactions = cur.fetchall()
+    cur.close()
+    return render_template('view_transactions.html', transactions=transactions)
+
+# Route: Edit Transaction
+@app.route('/edit/<int:transaction_id>', methods=['GET', 'POST'])
+def edit_transaction(transaction_id):
+    if not is_logged_in():
+        return redirect(url_for('login'))
+
+    user_id = session['user_id']
+    cur = mysql.connection.cursor()
+    if request.method == 'POST':
+        amount = request.form['amount']
+        category = request.form['category']
+        ttype = request.form['type']
+        description = request.form['description']
+        date = request.form['date']
+
+        cur.execute("""UPDATE transactions SET amount=%s, category=%s, type=%s, description=%s, date=%s
+                       WHERE id=%s AND user_id=%s""",
+                    (amount, category, ttype, description, date, transaction_id, user_id))
         mysql.connection.commit()
-    return redirect('/admin')
+        cur.close()
+        flash('Transaction updated', 'success')
+        return redirect(url_for('view_transactions'))
+
+    # GET method: show current data
+    cur.execute("SELECT id, amount, category, type, description, date FROM transactions WHERE id=%s AND user_id=%s",
+                (transaction_id, user_id))
+    transaction = cur.fetchone()
+    cur.close()
+    if not transaction:
+        flash('Transaction not found or access denied', 'danger')
+        return redirect(url_for('view_transactions'))
+
+    return render_template('edit_transaction.html', transaction=transaction)
+
+# Route: Delete Transaction
+@app.route('/delete/<int:transaction_id>')
+def delete_transaction(transaction_id):
+    if not is_logged_in():
+        return redirect(url_for('login'))
+
+    user_id = session['user_id']
+    cur = mysql.connection.cursor()
+    cur.execute("DELETE FROM transactions WHERE id=%s AND user_id=%s", (transaction_id, user_id))
+    mysql.connection.commit()
+    cur.close()
+    flash('Transaction deleted', 'success')
+    return redirect(url_for('view_transactions'))
 
 if __name__ == '__main__':
+    app.secret_key = Config.SECRET_KEY
     app.run(debug=True)
